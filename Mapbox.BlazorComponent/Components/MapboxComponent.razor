@@ -1,0 +1,1134 @@
+﻿@using Microsoft.AspNetCore.Components
+@using Microsoft.JSInterop
+@using Mapbox.BlazorComponent.Models
+@using System.Linq
+@using System.Text.Json
+@implements IAsyncDisposable
+@inject IJSRuntime JSRuntime
+
+<div class="mapbox-container">
+    @if (ShowDebugInfo)
+    {
+        <div class="alert alert-info">
+            <strong>Debug:</strong> MapId=@MapId | Zoom=@Zoom | Center=(@Longitude, @Latitude) | Bearing=@Bearing | Pitch=@Pitch
+        </div>
+    }
+
+    <div id="@MapId" style="width:@Width; height:@Height; position:relative;">
+        @if (ShowLoadingIndicator && !isMapLoaded)
+        {
+            <div class="map-loading-indicator">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Chargement de la carte...</span>
+                </div>
+            </div>
+        }
+    </div>
+
+    @if (ShowStatusBar)
+    {
+        <div class="map-status-bar">
+            <span>Lng: @currentLongitude.ToString("F6") | Lat: @currentLatitude.ToString("F6") | Zoom: @currentZoom.ToString("F2")</span>
+        </div>
+    }
+</div>
+
+<style>
+    .mapbox-container {
+        position: relative;
+    }
+
+    .map-loading-indicator {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 1000;
+        background: rgba(255, 255, 255, 0.9);
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .map-status-bar {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(0, 0, 0, 0.75);
+        color: white;
+        padding: 5px 10px;
+        font-size: 12px;
+        font-family: monospace;
+        z-index: 100;
+    }
+
+    .mapboxgl-popup-content {
+        padding: 10px;
+        border-radius: 4px;
+    }
+
+    .custom-marker {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: #3887be;
+        border: 2px solid white;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+</style>
+
+@code {
+    #region Paramètres de base
+    [Parameter] public string AccessToken { get; set; } = "";
+    [Parameter] public double Longitude { get; set; } = 2.3522;
+    [Parameter] public double Latitude { get; set; } = 48.8566;
+    [Parameter] public int Zoom { get; set; } = 9;
+    [Parameter] public double MinZoom { get; set; } = 0;
+    [Parameter] public double MaxZoom { get; set; } = 24;
+    [Parameter] public string Style { get; set; } = MapboxStyles.Streets;
+    [Parameter] public string Width { get; set; } = "100%";
+    [Parameter] public string Height { get; set; } = "400px";
+    [Parameter] public double Bearing { get; set; } = 0;
+    [Parameter] public double Pitch { get; set; } = 0;
+    [Parameter] public bool InteractiveMap { get; set; } = true;
+    [Parameter] public bool ShowDebugInfo { get; set; } = false;
+    [Parameter] public bool ShowLoadingIndicator { get; set; } = true;
+    [Parameter] public bool ShowStatusBar { get; set; } = false;
+    [Parameter] public double[]? MaxBounds { get; set; }
+    [Parameter] public bool RenderWorldCopies { get; set; } = true;
+    #endregion
+
+    #region Contrôles de la carte
+    [Parameter] public bool ShowNavigationControl { get; set; } = true;
+    [Parameter] public bool ShowGeolocateControl { get; set; } = true;
+    [Parameter] public bool ShowFullscreenControl { get; set; } = false;
+    [Parameter] public bool ShowScaleControl { get; set; } = false;
+    [Parameter] public bool ShowAttributionControl { get; set; } = true;
+    [Parameter] public string NavigationControlPosition { get; set; } = "top-right";
+    [Parameter] public string GeolocateControlPosition { get; set; } = "top-right";
+    [Parameter] public string FullscreenControlPosition { get; set; } = "top-right";
+    [Parameter] public string ScaleControlPosition { get; set; } = "bottom-left";
+    [Parameter] public string? CustomAttribution { get; set; }
+    #endregion
+
+    #region Options interaction
+    [Parameter] public bool ScrollZoom { get; set; } = true;
+    [Parameter] public bool BoxZoom { get; set; } = true;
+    [Parameter] public bool DragRotate { get; set; } = true;
+    [Parameter] public bool DragPan { get; set; } = true;
+    [Parameter] public bool Keyboard { get; set; } = true;
+    [Parameter] public bool DoubleClickZoom { get; set; } = true;
+    [Parameter] public bool TouchZoomRotate { get; set; } = true;
+    #endregion
+
+    #region Plugins
+    [Parameter] public bool EnableDrawPlugin { get; set; } = false;
+    [Parameter] public DrawPluginOptions? DrawOptions { get; set; }
+    [Parameter] public bool EnableGeocoder { get; set; } = false;
+    [Parameter] public GeocoderOptions? GeocoderOptions { get; set; }
+    [Parameter] public bool EnableDirections { get; set; } = false;
+    [Parameter] public DirectionsOptions? DirectionsOptions { get; set; }
+    [Parameter] public bool EnableTrafficPlugin { get; set; } = false;
+    [Parameter] public bool EnableTerrain { get; set; } = false;
+    [Parameter] public TerrainOptions? TerrainOptions { get; set; }
+    [Parameter] public bool Enable3DBuildings { get; set; } = false;
+    #endregion
+
+    #region Événements
+    [Parameter] public EventCallback<MapClickEventArgs> OnMapClick { get; set; }
+    [Parameter] public EventCallback<MapClickEventArgs> OnMapDoubleClick { get; set; }
+    [Parameter] public EventCallback<MapMoveEventArgs> OnMapMove { get; set; }
+    [Parameter] public EventCallback<MapZoomEventArgs> OnMapZoom { get; set; }
+    [Parameter] public EventCallback OnMapLoad { get; set; }
+    [Parameter] public EventCallback OnStyleLoad { get; set; }
+    [Parameter] public EventCallback<MapErrorEventArgs> OnMapError { get; set; }
+    [Parameter] public EventCallback<string> OnStyleChange { get; set; }
+    [Parameter] public EventCallback<GeolocationEventArgs> OnGeolocation { get; set; }
+    [Parameter] public EventCallback<DrawEventArgs> OnDrawCreate { get; set; }
+    [Parameter] public EventCallback<DrawEventArgs> OnDrawUpdate { get; set; }
+    [Parameter] public EventCallback<DrawEventArgs> OnDrawDelete { get; set; }
+    [Parameter] public EventCallback<MarkerDragEventArgs> OnMarkerDragEnd { get; set; }
+    [Parameter] public EventCallback<LayerEventArgs> OnLayerClick { get; set; }
+    [Parameter] public EventCallback<DirectionsEventArgs> OnDirectionsRoute { get; set; }
+    [Parameter] public EventCallback<GeocoderEventArgs> OnGeocoderResult { get; set; }
+    [Parameter] public EventCallback OnMouseEnter { get; set; }
+    [Parameter] public EventCallback OnMouseLeave { get; set; }
+    [Parameter] public EventCallback<MouseMoveEventArgs> OnMouseMove { get; set; }
+    [Parameter] public EventCallback OnTouchStart { get; set; }
+    [Parameter] public EventCallback OnTouchEnd { get; set; }
+    [Parameter] public EventCallback<double> OnRotate { get; set; }
+    [Parameter] public EventCallback<double> OnPitch { get; set; }
+    #endregion
+
+    #region Variables privées
+    private string MapId = $"map-{Guid.NewGuid():N}";
+    private IJSObjectReference? mapboxModule;
+    private IJSObjectReference? mapInstance;
+    private bool isMapLoaded = false;
+    private DotNetObjectReference<MapboxComponent>? dotNetRef;
+    private Dictionary<string, IJSObjectReference> loadedPlugins = new();
+    private double currentLongitude;
+    private double currentLatitude;
+    private double currentZoom;
+    private double currentBearing;
+    private double currentPitch;
+    private Dictionary<string, MapboxMarker> markerRegistry = new();
+    private Dictionary<string, string> popupRegistry = new();
+    private Dictionary<string, object> sourceRegistry = new();
+    private Dictionary<string, object> layerRegistry = new();
+    #endregion
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                dotNetRef = DotNetObjectReference.Create(this);
+                mapboxModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./mapbox-interop.js");
+                await InitializeMap();
+            }
+            catch (Exception ex)
+            {
+                await OnMapError.InvokeAsync(new MapErrorEventArgs { Message = ex.Message, Code = "INIT_ERROR" });
+            }
+        }
+    }
+
+    private async Task InitializeMap()
+    {
+        if (string.IsNullOrEmpty(AccessToken))
+        {
+            throw new InvalidOperationException("AccessToken est requis pour utiliser Mapbox");
+        }
+
+        var mapOptions = new
+        {
+            accessToken = AccessToken,
+            container = MapId,
+            style = Style,
+            center = new[] { Longitude, Latitude },
+            zoom = Zoom,
+            minZoom = MinZoom,
+            maxZoom = MaxZoom,
+            bearing = Bearing,
+            pitch = Pitch,
+            interactive = InteractiveMap,
+            attributionControl = ShowAttributionControl,
+            scrollZoom = ScrollZoom,
+            boxZoom = BoxZoom,
+            dragRotate = DragRotate,
+            dragPan = DragPan,
+            keyboard = Keyboard,
+            doubleClickZoom = DoubleClickZoom,
+            touchZoomRotate = TouchZoomRotate,
+            maxBounds = MaxBounds,
+            renderWorldCopies = RenderWorldCopies
+        };
+
+        mapInstance = await mapboxModule!.InvokeAsync<IJSObjectReference>("initializeMap", mapOptions);
+
+        // Initialiser les valeurs courantes
+        currentLongitude = Longitude;
+        currentLatitude = Latitude;
+        currentZoom = Zoom;
+        currentBearing = Bearing;
+        currentPitch = Pitch;
+
+        // Ajouter les contrôles
+        await AddControls();
+
+        // Configurer les événements
+        await mapboxModule.InvokeVoidAsync("setupMapEvents", mapInstance, dotNetRef);
+
+        // Charger les plugins activés
+        await LoadPlugins();
+
+        // Activer les fonctionnalités 3D si demandées
+        if (Enable3DBuildings)
+        {
+            await mapboxModule.InvokeVoidAsync("add3DBuildings", mapInstance);
+        }
+
+        isMapLoaded = true;
+        StateHasChanged();
+    }
+
+    private async Task AddControls()
+    {
+        if (ShowNavigationControl)
+        {
+            await mapboxModule!.InvokeVoidAsync("addNavigationControl", mapInstance, NavigationControlPosition);
+        }
+
+        if (ShowGeolocateControl)
+        {
+            var geolocateControl = await mapboxModule!.InvokeAsync<IJSObjectReference>(
+                "addGeolocateControl", mapInstance, GeolocateControlPosition);
+
+            if (OnGeolocation.HasDelegate)
+            {
+                await mapboxModule.InvokeVoidAsync("trackUserLocation", mapInstance, geolocateControl, dotNetRef);
+            }
+        }
+
+        if (ShowFullscreenControl)
+        {
+            await mapboxModule!.InvokeVoidAsync("addFullscreenControl", mapInstance, FullscreenControlPosition);
+        }
+
+        if (ShowScaleControl)
+        {
+            await mapboxModule!.InvokeVoidAsync("addScaleControl", mapInstance, ScaleControlPosition, new
+            {
+                maxWidth = 100,
+                unit = "metric"
+            });
+        }
+
+        if (ShowAttributionControl && !string.IsNullOrEmpty(CustomAttribution))
+        {
+            await mapboxModule!.InvokeVoidAsync("addAttributionControl", mapInstance, new
+            {
+                compact = false,
+                customAttribution = CustomAttribution
+            });
+        }
+    }
+
+    private async Task LoadPlugins()
+    {
+        if (EnableGeocoder)
+        {
+            var options = GeocoderOptions ?? new GeocoderOptions();
+            var geocoder = await mapboxModule!.InvokeAsync<IJSObjectReference>(
+                "loadGeocoderPlugin", mapInstance, AccessToken, options);
+            loadedPlugins["geocoder"] = geocoder;
+        }
+
+        if (EnableDrawPlugin)
+        {
+            var options = DrawOptions ?? new DrawPluginOptions();
+
+            // Créer un objet anonyme pour passer à JavaScript
+            var jsOptions = new
+            {
+                polygon = options.Polygon,
+                line = options.Line,
+                point = options.Point,
+                trash = options.Trash,
+                combine = options.Combine,
+                uncombine = options.Uncombine,
+                defaultMode = options.DefaultMode,
+                position = options.Position
+            };
+
+            var draw = await mapboxModule!.InvokeAsync<IJSObjectReference>(
+                "loadDrawPlugin", mapInstance, jsOptions);
+            loadedPlugins["draw"] = draw;
+        }
+
+        if (EnableDirections)
+        {
+            var options = DirectionsOptions ?? new DirectionsOptions();
+            var directions = await mapboxModule!.InvokeAsync<IJSObjectReference>(
+                "loadDirectionsPlugin", mapInstance, AccessToken, options);
+            loadedPlugins["directions"] = directions;
+        }
+
+        if (EnableTrafficPlugin)
+        {
+            await mapboxModule!.InvokeVoidAsync("enableTrafficLayer", mapInstance);
+        }
+
+        if (EnableTerrain)
+        {
+            var options = TerrainOptions ?? new TerrainOptions();
+            await mapboxModule!.InvokeVoidAsync("enableTerrain", mapInstance, options);
+        }
+    }
+
+    #region Callbacks JavaScript
+    [JSInvokable]
+    public async Task OnMapClickCallback(double lng, double lat)
+    {
+        if (OnMapClick.HasDelegate)
+        {
+            await OnMapClick.InvokeAsync(new MapClickEventArgs
+            {
+                Longitude = lng,
+                Latitude = lat,
+                Timestamp = DateTime.Now
+            });
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMapDoubleClickCallback(double lng, double lat)
+    {
+        if (OnMapDoubleClick.HasDelegate)
+        {
+            await OnMapDoubleClick.InvokeAsync(new MapClickEventArgs
+            {
+                Longitude = lng,
+                Latitude = lat,
+                Timestamp = DateTime.Now
+            });
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMapMoveCallback(double lng, double lat, double zoom, double bearing, double pitch)
+    {
+        currentLongitude = lng;
+        currentLatitude = lat;
+        currentZoom = zoom;
+        currentBearing = bearing;
+        currentPitch = pitch;
+
+        if (OnMapMove.HasDelegate)
+        {
+            await OnMapMove.InvokeAsync(new MapMoveEventArgs
+            {
+                Longitude = lng,
+                Latitude = lat,
+                Zoom = zoom,
+                Bearing = bearing,
+                Pitch = pitch
+            });
+        }
+
+        if (ShowStatusBar)
+        {
+            StateHasChanged();
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMapZoomCallback(double zoom)
+    {
+        currentZoom = zoom;
+        if (OnMapZoom.HasDelegate)
+        {
+            await OnMapZoom.InvokeAsync(new MapZoomEventArgs { Zoom = zoom });
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMapLoadCallback()
+    {
+        if (OnMapLoad.HasDelegate)
+        {
+            await OnMapLoad.InvokeAsync();
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnStyleLoadCallback()
+    {
+        if (OnStyleLoad.HasDelegate)
+        {
+            await OnStyleLoad.InvokeAsync();
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMapErrorCallback(string message)
+    {
+        if (OnMapError.HasDelegate)
+        {
+            await OnMapError.InvokeAsync(new MapErrorEventArgs { Message = message });
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnGeolocationCallback(double lng, double lat, double accuracy,
+        double? altitude, double? altitudeAccuracy, double? heading, double? speed)
+    {
+        if (OnGeolocation.HasDelegate)
+        {
+            await OnGeolocation.InvokeAsync(new GeolocationEventArgs
+            {
+                Longitude = lng,
+                Latitude = lat,
+                Accuracy = accuracy,
+                Altitude = altitude,
+                AltitudeAccuracy = altitudeAccuracy,
+                Heading = heading,
+                Speed = speed
+            });
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMouseEnterCallback()
+    {
+        if (OnMouseEnter.HasDelegate)
+        {
+            await OnMouseEnter.InvokeAsync();
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMouseLeaveCallback()
+    {
+        if (OnMouseLeave.HasDelegate)
+        {
+            await OnMouseLeave.InvokeAsync();
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMouseMoveCallback(double lng, double lat)
+    {
+        if (OnMouseMove.HasDelegate)
+        {
+            await OnMouseMove.InvokeAsync(new MouseMoveEventArgs { Longitude = lng, Latitude = lat });
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnTouchStartCallback()
+    {
+        if (OnTouchStart.HasDelegate)
+        {
+            await OnTouchStart.InvokeAsync();
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnTouchEndCallback()
+    {
+        if (OnTouchEnd.HasDelegate)
+        {
+            await OnTouchEnd.InvokeAsync();
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnRotateCallback(double bearing)
+    {
+        currentBearing = bearing;
+        if (OnRotate.HasDelegate)
+        {
+            await OnRotate.InvokeAsync(bearing);
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnDrawCreateCallback(string featuresJson)
+    {
+        if (OnDrawCreate.HasDelegate)
+        {
+            await OnDrawCreate.InvokeAsync(new DrawEventArgs
+            {
+                GeoJson = featuresJson,
+                Action = "create"
+            });
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnDrawUpdateCallback(string featuresJson)
+    {
+        if (OnDrawUpdate.HasDelegate)
+        {
+            await OnDrawUpdate.InvokeAsync(new DrawEventArgs
+            {
+                GeoJson = featuresJson,
+                Action = "update"
+            });
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnDrawDeleteCallback(string featuresJson)
+    {
+        if (OnDrawDelete.HasDelegate)
+        {
+            await OnDrawDelete.InvokeAsync(new DrawEventArgs
+            {
+                GeoJson = featuresJson,
+                Action = "delete"
+            });
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Navigation et contrôle de vue
+    public async Task FlyTo(double longitude, double latitude, int? zoom = null,
+        double? bearing = null, double? pitch = null, int? duration = null)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("flyTo", mapInstance,
+                longitude, latitude, zoom ?? currentZoom, bearing, pitch, duration);
+        }
+    }
+
+    public async Task JumpTo(double longitude, double latitude, int? zoom = null,
+        double? bearing = null, double? pitch = null)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("jumpTo", mapInstance,
+                longitude, latitude, zoom ?? currentZoom, bearing, pitch);
+        }
+    }
+
+    public async Task EaseTo(double longitude, double latitude, int? zoom = null,
+        double? bearing = null, double? pitch = null, int? duration = null)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("easeTo", mapInstance,
+                longitude, latitude, zoom ?? currentZoom, bearing, pitch, duration);
+        }
+    }
+
+    public async Task FitBounds(double[] bounds, int? padding = null, int? maxZoom = null)
+    {
+        if (mapInstance != null && mapboxModule != null && bounds.Length == 4)
+        {
+            await mapboxModule.InvokeVoidAsync("fitBounds", mapInstance, bounds, padding ?? 50, maxZoom);
+        }
+    }
+
+    public async Task SetZoom(double zoom)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setZoom", mapInstance, zoom);
+            currentZoom = zoom;
+        }
+    }
+
+    public async Task SetBearing(double bearing)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setBearing", mapInstance, bearing);
+            currentBearing = bearing;
+        }
+    }
+
+    public async Task SetPitch(double pitch)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setPitch", mapInstance, pitch);
+            currentPitch = pitch;
+        }
+    }
+
+    public async Task SetMaxBounds(double[]? bounds)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setMaxBounds", mapInstance, bounds);
+            MaxBounds = bounds;
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Gestion des marqueurs
+    public async Task<string> AddMarker(MapboxMarker marker)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            var markerId = await mapboxModule.InvokeAsync<string>("addMarker", mapInstance, marker);
+            markerRegistry[markerId] = marker;
+            return markerId;
+        }
+        return "";
+    }
+
+    public async Task RemoveMarker(string markerId)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("removeMarker", mapInstance, markerId);
+            markerRegistry.Remove(markerId);
+        }
+    }
+
+    public async Task UpdateMarker(string markerId, MapboxMarker marker)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("updateMarker", mapInstance, markerId, marker);
+            markerRegistry[markerId] = marker;
+        }
+    }
+
+    public async Task AnimateMarker(string markerId, double[][] path, int duration = 5000)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("animateMarker", mapInstance, markerId, path, duration);
+        }
+    }
+
+    public async Task ClearAllMarkers()
+    {
+        foreach (var markerId in markerRegistry.Keys.ToList())
+        {
+            await RemoveMarker(markerId);
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Gestion des popups
+    public async Task<string> ShowPopup(double longitude, double latitude, string html, PopupOptions? options = null)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            var popupId = await mapboxModule.InvokeAsync<string>("showPopup",
+                mapInstance, longitude, latitude, html, options ?? new PopupOptions());
+            popupRegistry[popupId] = html;
+            return popupId;
+        }
+        return "";
+    }
+
+    public async Task ClosePopup(string popupId)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("closePopup", mapInstance, popupId);
+            popupRegistry.Remove(popupId);
+        }
+    }
+
+    public async Task CloseAllPopups()
+    {
+        foreach (var popupId in popupRegistry.Keys.ToList())
+        {
+            await ClosePopup(popupId);
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Gestion des couches et sources
+    public async Task AddSource(string sourceId, object sourceData)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("addSource", mapInstance, sourceId, sourceData);
+            sourceRegistry[sourceId] = sourceData;
+        }
+    }
+
+    public async Task RemoveSource(string sourceId)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("removeSource", mapInstance, sourceId);
+            sourceRegistry.Remove(sourceId);
+        }
+    }
+
+    public async Task UpdateSource(string sourceId, object data)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("updateSource", mapInstance, sourceId, data);
+            sourceRegistry[sourceId] = data;
+        }
+    }
+
+    public async Task AddLayer(LayerDefinition layerDefinition, string? beforeLayerId = null)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("addLayer", mapInstance, layerDefinition, beforeLayerId);
+            layerRegistry[layerDefinition.Id] = layerDefinition;
+        }
+    }
+
+    public async Task RemoveLayer(string layerId)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("removeLayer", mapInstance, layerId);
+            layerRegistry.Remove(layerId);
+        }
+    }
+
+    public async Task SetLayerVisibility(string layerId, bool visible)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setLayerVisibility",
+                mapInstance, layerId, visible ? "visible" : "none");
+        }
+    }
+
+    public async Task SetPaintProperty(string layerId, string property, object value)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setPaintProperty", mapInstance, layerId, property, value);
+        }
+    }
+
+    public async Task SetLayoutProperty(string layerId, string property, object value)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setLayoutProperty", mapInstance, layerId, property, value);
+        }
+    }
+
+    public async Task SetFilter(string layerId, object filter)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setFilter", mapInstance, layerId, filter);
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Gestion des styles
+    public async Task SetStyle(string styleUrl)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setStyle", mapInstance, styleUrl);
+            Style = styleUrl;
+            if (OnStyleChange.HasDelegate)
+            {
+                await OnStyleChange.InvokeAsync(styleUrl);
+            }
+        }
+    }
+
+    public async Task SetLight(LightOptions light)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setLight", mapInstance, light);
+        }
+    }
+
+    public async Task SetFog(FogOptions fog)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("setFog", mapInstance, fog);
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Terrain et 3D
+    public async Task EnableTerrainLayer(TerrainOptions? options = null)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("enableTerrain", mapInstance, options ?? new TerrainOptions());
+        }
+    }
+
+    public async Task DisableTerrainLayer()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("disableTerrain", mapInstance);
+        }
+    }
+
+    public async Task Add3DBuildingsLayer()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("add3DBuildings", mapInstance);
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Traffic
+    public async Task EnableTrafficLayer()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("enableTrafficLayer", mapInstance);
+            EnableTrafficPlugin = true;
+        }
+    }
+
+    public async Task DisableTrafficLayer()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("disableTrafficLayer", mapInstance);
+            EnableTrafficPlugin = false;
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Requêtes et informations
+    public async Task<List<object>> QueryRenderedFeatures(double[]? point = null, QueryOptions? options = null)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            var result = await mapboxModule.InvokeAsync<List<object>>("queryRenderedFeatures",
+                mapInstance, point, options ?? new QueryOptions());
+            return result;
+        }
+        return new List<object>();
+    }
+
+    public async Task<List<object>> QuerySourceFeatures(string sourceId, QueryOptions? options = null)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            var result = await mapboxModule.InvokeAsync<List<object>>("querySourceFeatures",
+                mapInstance, sourceId, options ?? new QueryOptions());
+            return result;
+        }
+        return new List<object>();
+    }
+
+    public async Task<MapBounds> GetBounds()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            var bounds = await mapboxModule.InvokeAsync<MapBounds>("getBounds", mapInstance);
+            return bounds;
+        }
+        return new MapBounds();
+    }
+
+    public async Task<MapCenter> GetCenter()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            var center = await mapboxModule.InvokeAsync<MapCenter>("getCenter", mapInstance);
+            return center;
+        }
+        return new MapCenter { Longitude = currentLongitude, Latitude = currentLatitude };
+    }
+
+    public async Task<double> GetZoom()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            return await mapboxModule.InvokeAsync<double>("getZoom", mapInstance);
+        }
+        return currentZoom;
+    }
+
+    public async Task<double> GetBearing()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            return await mapboxModule.InvokeAsync<double>("getBearing", mapInstance);
+        }
+        return currentBearing;
+    }
+
+    public async Task<double> GetPitch()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            return await mapboxModule.InvokeAsync<double>("getPitch", mapInstance);
+        }
+        return currentPitch;
+    }
+
+    public async Task<bool> IsMoving()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            return await mapboxModule.InvokeAsync<bool>("isMoving", mapInstance);
+        }
+        return false;
+    }
+
+    public async Task<bool> IsZooming()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            return await mapboxModule.InvokeAsync<bool>("isZooming", mapInstance);
+        }
+        return false;
+    }
+
+    public async Task<bool> IsRotating()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            return await mapboxModule.InvokeAsync<bool>("isRotating", mapInstance);
+        }
+        return false;
+    }
+    #endregion
+
+    #region Méthodes publiques - Capture et export
+    public async Task<string> GetMapImage(string format = "png", double quality = 0.92)
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            return await mapboxModule.InvokeAsync<string>("getMapImage", mapInstance, format, quality);
+        }
+        return "";
+    }
+
+    public async Task<byte[]> GetMapImageBytes(string format = "png", double quality = 0.92)
+    {
+        var dataUrl = await GetMapImage(format, quality);
+        if (!string.IsNullOrEmpty(dataUrl))
+        {
+            var base64 = dataUrl.Split(',')[1];
+            return Convert.FromBase64String(base64);
+        }
+        return Array.Empty<byte>();
+    }
+    #endregion
+
+    #region Méthodes publiques - Plugins Draw
+    public async Task<string> GetDrawnFeatures()
+    {
+        if (mapInstance != null && mapboxModule != null && loadedPlugins.ContainsKey("draw"))
+        {
+            var features = await mapboxModule.InvokeAsync<object>("getDrawnFeatures", loadedPlugins["draw"]);
+            return JsonSerializer.Serialize(features);
+        }
+        return "[]";
+    }
+
+    public async Task ClearDrawnFeatures()
+    {
+        if (mapInstance != null && mapboxModule != null && loadedPlugins.ContainsKey("draw"))
+        {
+            await mapboxModule.InvokeVoidAsync("clearDrawnFeatures", loadedPlugins["draw"]);
+        }
+    }
+
+    public async Task SetDrawMode(string mode)
+    {
+        if (mapInstance != null && mapboxModule != null && loadedPlugins.ContainsKey("draw"))
+        {
+            await mapboxModule.InvokeVoidAsync("setDrawMode", loadedPlugins["draw"], mode);
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Plugin Directions
+    public async Task SetDirectionsRoute(double[] origin, double[] destination, string profile = "driving")
+    {
+        if (mapInstance != null && mapboxModule != null && loadedPlugins.ContainsKey("directions"))
+        {
+            await mapboxModule.InvokeVoidAsync("setDirectionsRoute",
+                loadedPlugins["directions"], origin, destination, profile);
+        }
+    }
+
+    public async Task ClearDirectionsRoute()
+    {
+        if (mapInstance != null && mapboxModule != null && loadedPlugins.ContainsKey("directions"))
+        {
+            await mapboxModule.InvokeVoidAsync("clearDirectionsRoute", loadedPlugins["directions"]);
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Plugin Geocoder
+    public async Task SetGeocoderInput(string value)
+    {
+        if (mapInstance != null && mapboxModule != null && loadedPlugins.ContainsKey("geocoder"))
+        {
+            await mapboxModule.InvokeVoidAsync("setGeocoderInput", loadedPlugins["geocoder"], value);
+        }
+    }
+
+    public async Task ClearGeocoderInput()
+    {
+        if (mapInstance != null && mapboxModule != null && loadedPlugins.ContainsKey("geocoder"))
+        {
+            await mapboxModule.InvokeVoidAsync("clearGeocoderInput", loadedPlugins["geocoder"]);
+        }
+    }
+    #endregion
+
+    #region Méthodes publiques - Mesures
+    public async Task<double> MeasureDistance(double[][] coordinates)
+    {
+        if (mapInstance != null && mapboxModule != null && coordinates.Length >= 2)
+        {
+            return await mapboxModule.InvokeAsync<double>("measureDistance", coordinates);
+        }
+        return 0;
+    }
+
+    public async Task<double> MeasureArea(double[][] coordinates)
+    {
+        if (mapInstance != null && mapboxModule != null && coordinates.Length >= 3)
+        {
+            return await mapboxModule.InvokeAsync<double>("measureArea", coordinates);
+        }
+        return 0;
+    }
+    #endregion
+
+    #region Méthodes publiques - Utilitaires
+    public async Task AddCustomControl(string html, string position = "top-right")
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("addCustomControl", mapInstance, html, position);
+        }
+    }
+
+    public async Task TriggerResize()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("triggerResize", mapInstance);
+        }
+    }
+
+    public async Task ResetNorth()
+    {
+        await SetBearing(0);
+    }
+
+    public async Task ResetPitch()
+    {
+        await SetPitch(0);
+    }
+
+    public async Task Reset()
+    {
+        await JumpTo(Longitude, Latitude, Zoom, 0, 0);
+    }
+    #endregion
+
+    #region Nettoyage
+    public async ValueTask DisposeAsync()
+    {
+        if (mapInstance != null && mapboxModule != null)
+        {
+            await mapboxModule.InvokeVoidAsync("destroy", mapInstance);
+        }
+
+        foreach (var plugin in loadedPlugins.Values)
+        {
+            await plugin.DisposeAsync();
+        }
+
+        if (mapInstance != null)
+        {
+            await mapInstance.DisposeAsync();
+        }
+
+        if (mapboxModule != null)
+        {
+            await mapboxModule.DisposeAsync();
+        }
+
+        dotNetRef?.Dispose();
+    }
+    #endregion
+}
