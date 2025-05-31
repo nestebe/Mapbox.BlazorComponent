@@ -186,7 +186,7 @@
             try
             {
                 dotNetRef = DotNetObjectReference.Create(this);
-                mapboxModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./mapbox-interop.js");
+                mapboxModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "/_content/Mapbox.BlazorComponent/mapbox-interop.js");
                 await InitializeMap();
             }
             catch (Exception ex)

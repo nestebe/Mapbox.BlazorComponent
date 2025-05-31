@@ -76,18 +76,6 @@ Install-Package MapboxBlazor
 @using MapboxBlazor.Models
 ```
 
-3. Include the JavaScript file in your host file:
-
-**For Blazor WebAssembly** (`wwwroot/index.html`):
-```html
-<script src="_content/MapboxBlazor/mapbox-interop.js"></script>
-```
-
-**For Blazor Server** (`Pages/_Host.cshtml` or `App.razor`):
-```html
-<script src="_content/MapboxBlazor/mapbox-interop.js"></script>
-```
-
 ## 🎯 Quick Start
 
 ### Basic Map
