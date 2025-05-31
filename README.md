@@ -54,13 +54,13 @@ A comprehensive Blazor component for integrating Mapbox GL JS into your Blazor W
 ### Install via NuGet
 
 ```bash
-dotnet add package MapboxBlazor
+dotnet add package Mapbox.BlazorComponent
 ```
 
 Or via Package Manager Console:
 
 ```powershell
-Install-Package MapboxBlazor
+Install-Package Mapbox.BlazorComponent
 ```
 
 ### Manual Installation
